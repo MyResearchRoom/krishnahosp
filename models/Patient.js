@@ -76,12 +76,13 @@ module.exports = (sequelize, DataTypes) => {
     "referredBy",
   ];
 
-  Patient.addHook("beforeCreate", (patient) => encryptFields(patient));
-  Patient.addHook("beforeUpdate", (patient) => encryptFields(patient));
+  Patient.addHook("beforeCreate", (patient) => encryptFields(patient, true));
+  Patient.addHook("beforeUpdate", (patient) => encryptFields(patient, false));
 
-  function encryptFields(instance) {
+  function encryptFields(instance, isCreate) {
     ENCRYPT_FIELDS.forEach((field) => {
-      if (instance[field]) {
+      const shouldEncrypt = isCreate ? !!instance[field] : instance.changed(field) && !!instance[field];
+      if (shouldEncrypt) {
         instance[field] = encrypt(instance[field]);
       }
     });
@@ -109,6 +110,11 @@ module.exports = (sequelize, DataTypes) => {
     Patient.hasMany(models.Appointment, {
       foreignKey: "patientId",
       as: "appointments",
+    });
+
+    Patient.hasMany(models.IPDAdmission, {
+      foreignKey: "patientId",
+      as: "admissions",
     });
   };
 

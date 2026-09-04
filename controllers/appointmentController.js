@@ -6,6 +6,7 @@ const {
   Appointment,
   AuditLog,
   Doctor,
+  SubDoctor,
   sequelize,
 } = require("../models");
 const {
@@ -120,7 +121,7 @@ const patientController = {
 
       res.status(200).json({ message: "Parameters added successfully" });
     } catch (error) {
-      if (transaction) await transaction.commit();
+      if (transaction && !transaction.finished) await transaction.rollback();
       res.status(500).json({ error: "Failed to add parameters" });
     }
   },
@@ -306,6 +307,7 @@ const patientController = {
       chiefComplaints,
       diagnosis,
       prescription,
+      language
     } = req.body;
 
     if (fees) {
@@ -406,6 +408,8 @@ const patientController = {
       appointment.investigation = investigation ? investigation : null;
       appointment.chiefComplaints = chiefComplaints ? chiefComplaints : null;
       appointment.diagnosis = diagnosis ? diagnosis : null;
+      appointment.language=language ? language : null;
+
       if (fees && appointment.status !== "out") {
         appointment.fees = appointment.fees + parseInt(fees, 10);
       }
@@ -489,6 +493,8 @@ const patientController = {
 
       res.status(200).json({ message: "Prescription submitted successfully" });
     } catch (error) {
+      console.log(error);
+      
       if (transaction) await transaction.rollback();
       res.status(500).json({
         error: "Failed to add prescription",
@@ -501,14 +507,14 @@ const patientController = {
       req.query;
 
     try {
+      const targetDate = date ? date : moment().tz("Asia/Kolkata").format("YYYY-MM-DD");
       const appointmentWhere = {
         date: {
           [Op.between]: [
-            moment(date).tz("Asia/Kolkata").startOf("day").toDate(),
-            moment(date).tz("Asia/Kolkata").endOf("day").toDate(),
+            moment(targetDate).tz("Asia/Kolkata").startOf("day").toDate(),
+            moment(targetDate).tz("Asia/Kolkata").endOf("day").toDate(),
           ],
         },
-        "$patient.doctorId$": req.user.hospitalId,
       };
 
       if (req.user.role === "doctor" && !doctorId) {
@@ -517,10 +523,6 @@ const patientController = {
 
       if (req.user.role === "subDoctor") {
         appointmentWhere.subDoctorId = req.user.id;
-      }
-
-      if (req.user.role === "receptionist" && !doctorId) {
-        appointmentWhere.doctorId = req.user.hospitalId;
       }
 
       if (doctorId && (doctorType === "doctor" || doctorType === "subDoctor")) {
@@ -537,15 +539,26 @@ const patientController = {
         attributes: ["mapping"],
       });
 
+      const patientWhere = { doctorId: req.user.hospitalId };
+
       if (searchTerm && searchTerm.length > 0) {
+        let mappingObj = {};
+        if (doctor && doctor.mapping) {
+          try {
+            const decrypted = decrypt(doctor.mapping);
+            mappingObj = decrypted ? JSON.parse(decrypted) : {};
+          } catch (e) {
+            mappingObj = {};
+          }
+        }
         const transformSearchTerm = transformWithMapping(
           searchTerm,
-          JSON.parse(decrypt(doctor.mapping)) || {}
+          mappingObj
         );
 
-        appointmentWhere[Op.or] = [
-          { "$patient.patientId$": { [Op.like]: `%${transformSearchTerm}%` } },
-          { "$patient.nameSearch$": { [Op.like]: `%${transformSearchTerm}%` } },
+        patientWhere[Op.or] = [
+          { patientId: { [Op.like]: `%${transformSearchTerm}%` } },
+          { nameSearch: { [Op.like]: `%${transformSearchTerm}%` } },
         ];
       }
 
@@ -555,6 +568,21 @@ const patientController = {
           {
             model: Patient,
             as: "patient",
+            where: patientWhere,
+            required: true,
+            
+          },
+          {
+            model: Doctor,
+            as: "doctor",
+            required: false,
+            attributes:["id","name","mobileNumber","department","medicalDegree","specialization","prescriptionDisplay","signature"]
+          },
+          {
+            model: SubDoctor,
+            as: "subDoctor",
+            required: false,
+            attributes:["id","name","mobileNumber","department","qualification","specialization","prescriptionDisplay","signature"]
           },
         ],
         order: [
@@ -569,54 +597,123 @@ const patientController = {
         ],
       });
 
-      const data = appointments.map((appointment) => ({
-        ...appointment.toJSON(),
-        doctorType: appointment.doctorId ? "doctor" : "subDoctor",
-        document: appointment.document
-          ? getDecryptedDocumentAsBase64(appointment.document)
-          : null,
-      }));
+      // const data = appointments.map((appointment) => ({
+      //   ...appointment.toJSON(),
+      //   doctorType : appointment.doctorId
+      //     ? "doctor"
+      //     : appointment.subDoctorId
+      //       ? "subDoctor"
+      //       : null,
+      //   document: appointment.document
+      //     ? getDecryptedDocumentAsBase64(appointment.document)
+      //     : null,
+      //   department: appointment.doctorId 
+      //     ? appointment.doctor.department 
+      //     : appointment.subDoctorId 
+      //       ? appointment.subDoctor.department 
+      //       : null,
 
-      const includeOption = [
-        {
-          model: Patient,
-          as: "patient",
-        },
-      ];
-      const whereClause = {
-        "$patient.doctorId$": req.user.hospitalId,
-        date: {
-          [Op.between]: [
-            moment(date).tz("Asia/Kolkata").startOf("day").toDate(),
-            moment(date).tz("Asia/Kolkata").endOf("day").toDate(),
-          ],
-        },
+      //   doctor: appointment.doctor
+      //     ? {
+      //         ...appointment.doctor,
+      //         signature: getDecryptedDocumentAsBase64(
+      //           appointment.doctor.signature
+      //         ),
+      //       }
+      //     : null,
+
+      //   subDoctor: appointment.subDoctor
+      //     ? {
+      //         ...appointment.subDoctor,
+      //         signature: getDecryptedDocumentAsBase64(
+      //           appointment.subDoctor.signature
+      //         ),
+      //       }
+      //     : null,
+      // }));
+
+      const data = appointments.map((appointment) => {
+        const appointmentData = appointment.toJSON();
+
+        const doctor = appointment.doctor
+          ? appointment.doctor.toJSON()
+          : null;
+
+        const subDoctor = appointment.subDoctor
+          ? appointment.subDoctor.toJSON()
+          : null;
+
+        return {
+          ...appointmentData,
+
+          doctorType: appointment.doctorId
+            ? "doctor"
+            : appointment.subDoctorId
+              ? "subDoctor"
+              : null,
+
+          department: appointment.doctorId
+            ? doctor?.department
+            : appointment.subDoctorId
+              ? subDoctor?.department
+              : null,
+
+          document: getDecryptedDocumentAsBase64(appointment.document),
+
+          doctor: doctor
+            ? {
+                ...doctor,
+                signature: getDecryptedDocumentAsBase64(doctor.signature),
+              }
+            : null,
+
+          subDoctor: subDoctor
+            ? {
+                ...subDoctor,
+                signature: getDecryptedDocumentAsBase64(subDoctor.signature),
+              }
+            : null,
+        };
+      });
+
+      const countWhere = {
+        ...appointmentWhere,
       };
 
       if ((doctorType || req.user.role) === "doctor") {
-        whereClause.doctorId = doctorId || req.user.id;
+        countWhere.doctorId = doctorId || req.user.id;
       } else if ((doctorType || req.user.role) === "subDoctor") {
-        whereClause.subDoctorId = doctorId || req.user.id;
+        countWhere.subDoctorId = doctorId || req.user.id;
       }
-      // if (doctorId && (doctorType === "doctor" || doctorType === "subDoctor")) {
-      //   whereClause[doctorType === "doctor" ? "doctorId" : "subDoctorId"] =
-      //     doctorId;
-      // }
 
       const [pendingCnt, completeCnt] = await Promise.all([
         Appointment.count({
           where: {
-            ...whereClause,
+            ...countWhere,
             status: null,
           },
-          include: includeOption,
+          include: [
+            {
+              model: Patient,
+              as: "patient",
+              where: patientWhere,
+              required: true,
+            },
+          ],
         }),
         Appointment.count({
           where: {
-            ...whereClause,
+            ...countWhere,
             status: "out",
           },
-          include: includeOption,
+          include: [
+            {
+              model: Patient,
+              as: "patient",
+              where: patientWhere,
+              required: true,
+            },
+          ],
         }),
       ]);
 
@@ -641,6 +738,7 @@ const patientController = {
         stats: { pendingCnt, completeCnt },
       });
     } catch (error) {
+      console.error("[getTodaysAppointments Error]:", error);
       res.status(500).json({ error: "Failed to get appointments" });
     }
   },
@@ -655,6 +753,20 @@ const patientController = {
           {
             model: Appointment,
             as: "appointments",
+            include: [
+              {
+                model: Doctor,
+                as: "doctor",
+                required: false,
+                attributes:["id","name","mobileNumber","department","medicalDegree","specialization","prescriptionDisplay","signature"]
+              },
+              {
+                model: SubDoctor,
+                as: "subDoctor",
+                required: false,
+                attributes:["id","name","mobileNumber","department","qualification","specialization","prescriptionDisplay","signature"]
+              },
+            ],
           },
         ],
       });
@@ -663,10 +775,82 @@ const patientController = {
         return res.status(404).json({ error: "Patient not found" });
       }
 
-      const data = appointments.appointments.map((appointment) => ({
-        ...appointment.toJSON(),
-        document: getDecryptedDocumentAsBase64(appointment.document),
-      }));
+      // const data = appointments.appointments.map((appointment) => ({
+      //   ...appointment.toJSON(),
+      //   doctorType : appointment.doctorId
+      //     ? "doctor"
+      //     : appointment.subDoctorId
+      //       ? "subDoctor"
+      //       : null,
+      //   department: appointment.doctorId 
+      //     ? appointment.doctor.department 
+      //     : appointment.subDoctorId 
+      //       ? appointment.subDoctor.department 
+      //       : null,
+      //   document: getDecryptedDocumentAsBase64(appointment.document),
+      //   doctor: appointment.doctor
+      //     ? {
+      //         ...appointment.doctor,
+      //         signature: getDecryptedDocumentAsBase64(
+      //           appointment.doctor.signature
+      //         ),
+      //       }
+      //     : null,
+
+      //   subDoctor: appointment.subDoctor
+      //     ? {
+      //         ...appointment.subDoctor,
+      //         signature: getDecryptedDocumentAsBase64(
+      //           appointment.subDoctor.signature
+      //         ),
+      //       }
+      //     : null,
+
+
+      // }));
+      const data = appointments.appointments.map((appointment) => {
+        const appointmentData = appointment.toJSON();
+
+        const doctor = appointment.doctor
+          ? appointment.doctor.toJSON()
+          : null;
+
+        const subDoctor = appointment.subDoctor
+          ? appointment.subDoctor.toJSON()
+          : null;
+
+        return {
+          ...appointmentData,
+
+          doctorType: appointment.doctorId
+            ? "doctor"
+            : appointment.subDoctorId
+              ? "subDoctor"
+              : null,
+
+          department: appointment.doctorId
+            ? doctor?.department
+            : appointment.subDoctorId
+              ? subDoctor?.department
+              : null,
+
+          document: getDecryptedDocumentAsBase64(appointment.document),
+
+          doctor: doctor
+            ? {
+                ...doctor,
+                signature: getDecryptedDocumentAsBase64(doctor.signature),
+              }
+            : null,
+
+          subDoctor: subDoctor
+            ? {
+                ...subDoctor,
+                signature: getDecryptedDocumentAsBase64(subDoctor.signature),
+              }
+            : null,
+        };
+      });
 
       await AuditLog.create({
         action: constants.GET_PATIENT_APPOINTMENTS,

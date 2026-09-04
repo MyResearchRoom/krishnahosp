@@ -146,7 +146,7 @@ const patientRegistrationValidationRule = [
   check("bloodGroup").optional(),
   check("gender").notEmpty().withMessage("Gender is required"),
   check("reason").notEmpty().withMessage("Reason is required"),
-  check("process").notEmpty().withMessage("Process is required"),
+  check("process").notEmpty().withMessage("Booking via is required"),
   check("date").notEmpty().withMessage("Appointment date is required"),
   check("appointmentTime")
     .notEmpty()

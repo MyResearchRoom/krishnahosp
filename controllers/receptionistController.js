@@ -62,12 +62,7 @@ const receptionistController = {
       shiftId,
     } = req.body;
 
-    const documents = req.files["documents[]"];
-    if (!documents) {
-      return res
-        .status(400)
-        .json({ error: "Please provide at least one document" });
-    }
+    const documents = req.files ? (req.files["documents"] || req.files["documents[]"]) : null;
 
     const parsedDate = moment(dateOfBirth, "YYYY-MM-DD", true);
     const calculatedAge = moment().diff(parsedDate, "years");
@@ -99,19 +94,30 @@ const receptionistController = {
           .json({ error: "Email is already registered with another user." });
       }
 
-      const receptionistCount = await Receptionist.count({
-        where: {
-          doctorId: req.user.hospitalId,
-        },
-        transaction,
-      });
+      // const planLimit = await checkPlanLimit({
+      //   hospitalId: req.user.hospitalId,
+      //   resource: "staff",
+      //   transaction,
+      // });
 
-      if (receptionistCount >= max_receptionist) {
-        if (transaction) await transaction.rollback();
-        return res.status(400).json({
-          error: `You can't add more than ${max_receptionist} receptionsts.`,
-        });
-      }
+      // if (!planLimit.allowed) {
+      //   if (transaction) await transaction.rollback();
+      //   return res.status(planLimit.status).json(planLimit.response);
+      // }
+
+      // const receptionistCount = await Receptionist.count({
+      //   where: {
+      //     doctorId: req.user.hospitalId,
+      //   },
+      //   transaction,
+      // });
+
+      // if (receptionistCount >= max_receptionist) {
+      //   if (transaction) await transaction.rollback();
+      //   return res.status(400).json({
+      //     error: `You can't add more than ${max_receptionist} receptionsts.`,
+      //   });
+      // }
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const receptionistId = await generateUniqueReceptionistId(name);
@@ -145,18 +151,20 @@ const receptionistController = {
         { transaction }
       );
 
-      for (const file of documents) {
-        await ReceptionistDocument.create(
-          {
-            document: `data:${file.mimetype};base64,${file.buffer.toString(
-              "base64"
-            )}`,
-            contentType: file.mimetype,
-            fileName: file.originalname,
-            receptionistId: newReceptionist.id,
-          },
-          { transaction }
-        );
+      if (documents && documents.length > 0) {
+        for (const file of documents) {
+          await ReceptionistDocument.create(
+            {
+              document: `data:${file.mimetype};base64,${file.buffer.toString(
+                "base64"
+              )}`,
+              contentType: file.mimetype,
+              fileName: file.originalname,
+              receptionistId: newReceptionist.id,
+            },
+            { transaction }
+          );
+        }
       }
 
       const receptionistDataForAudit = {
@@ -232,15 +240,18 @@ const receptionistController = {
       address,
       dateOfBirth,
       age,
+      email,
       gender,
       qualification,
       dateOfJoining,
       shiftId,
     } = req.body;
 
+    let calculatedAge = 0;
+
     if (dateOfBirth) {
       const parsedDate = moment(dateOfBirth, "YYYY-MM-DD", true);
-      const calculatedAge = moment().diff(parsedDate, "years");
+      calculatedAge = moment().diff(parsedDate, "years");
       if (calculatedAge < 18) {
         return res.status(400).json({
           error: "Age must be 18 or older based on the date of birth",
@@ -252,7 +263,7 @@ const receptionistController = {
       return res.status(400).json({ error: "Age must be 18 or older" });
     }
 
-    const documents = req.files["documents[]"];
+    const documents = req.files ? (req.files["documents"] || req.files["documents[]"]) : null;
 
     const transaction = await sequelize.transaction();
     try {
@@ -270,6 +281,8 @@ const receptionistController = {
           "email",
           "dateOfJoining",
           "receptionistId",
+          "profile",
+          "profileContentType",
         ],
         where: { id: receptionistId },
         transaction,
@@ -280,30 +293,33 @@ const receptionistController = {
         return res.status(404).json({ error: "Receptionist not found" });
       }
 
-      await receptionist.update(
-        {
-          name: name || receptionist.name,
-          mobileNumber: mobileNumber || receptionist.mobileNumber,
-          address: address || receptionist.address,
-          dateOfBirth: dateOfBirth || receptionist.dateOfBirth,
-          age: age || receptionist.age,
-          gender: gender || receptionist.gender,
-          qualification: qualification || receptionist.qualification,
-          shiftId: shiftId || receptionist.shiftId,
-          dateOfJoining: dateOfJoining || receptionist.dateOfJoining,
-        },
-        { transaction }
-      );
+      let profile = null;
+      let profileContentType = null;
 
-      // If new documents are provided, update receptionist documents
+      if (req.files?.profile?.length > 0) {
+        profile = `data:${req.files.profile[0].mimetype};base64,${req.files.profile[0].buffer.toString("base64")}`;
+        profileContentType = req.files.profile[0].mimetype;
+      }
+
+      receptionist.name = name || receptionist.name;
+      receptionist.mobileNumber = mobileNumber || receptionist.mobileNumber;
+      receptionist.address = address || receptionist.address;
+      receptionist.dateOfBirth = dateOfBirth || receptionist.dateOfBirth;
+      receptionist.age = calculatedAge || age || receptionist.age;
+      receptionist.gender = gender || receptionist.gender;
+      receptionist.email = email || receptionist.email;
+      receptionist.qualification = qualification || receptionist.qualification;
+      receptionist.shiftId = shiftId || receptionist.shiftId;
+      receptionist.dateOfJoining = dateOfJoining || receptionist.dateOfJoining;
+      if (profile) {
+        receptionist.profile = profile;
+        receptionist.profileContentType = profileContentType;
+      }
+
+      await receptionist.save({ transaction });
+
       if (documents && documents.length > 0) {
-        // Delete old documents
-        // await ReceptionistDocument.destroy({
-        //   where: { receptionistId: receptionist.id },
-        //   transaction,
-        // });
-
-        // Add new documents
+        
         for (const file of documents) {
           await ReceptionistDocument.create(
             {
@@ -359,7 +375,12 @@ const receptionistController = {
       receptionist.password = "";
       return res.status(200).json({
         message: "Receptionist updated successfully!",
-        receptionist,
+        receptionist: {
+          ...receptionist.toJSON(),
+          profile: receptionist.profile
+            ? getDecryptedDocumentAsBase64(receptionist.profile)
+            : null,
+        },
       });
     } catch (error) {
       await transaction.rollback();
@@ -489,7 +510,7 @@ const receptionistController = {
 
   async changePassword(req, res) {
     if (!req.user) {
-      return res.status(401).json({ error: "Unauthorized request" }); // Unauthorized
+      return res.status(401).json({ error: "Unauthorized request" }); 
     }
 
     const receptionistId = req.params.id;
@@ -572,6 +593,7 @@ const receptionistController = {
         },
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to get receptionist" });
     }
   },
@@ -770,8 +792,9 @@ const receptionistController = {
         )}`,
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       console.log(error);
-      
+
       return res.status(500).json({ error: "Failed to update profile" });
     }
   },
@@ -865,6 +888,7 @@ const receptionistController = {
 
       return res.status(200).json({ message: "Checked in successfully" });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({
         error: "Failed to check in",
       });
@@ -891,6 +915,7 @@ const receptionistController = {
       });
 
       if (!attendance) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(404).json({ error: "Check-in not found for today" });
       }
 
@@ -901,7 +926,6 @@ const receptionistController = {
 
       let checkOutTime;
 
-      // Record check-out time in IST
       attendance.checkOutTime = momentTimezone().tz("Asia/Kolkata").format();
       await attendance.save();
 
@@ -910,7 +934,6 @@ const receptionistController = {
           doctorId: req.user.hospitalId,
           message: `Receptionist ${
             req.user.name
-            // } checked out at ${new Date().toLocaleString()}.`,
           } checked out at ${momentTimezone()
             .tz("Asia/Kolkata")
             .format("hh:mm A, DD MMM YYYY")}.`,
@@ -961,6 +984,7 @@ const receptionistController = {
 
       return res.status(200).json({ message: "Checked out successfully" });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({
         error: "Failed to check out",
       });
@@ -1305,6 +1329,36 @@ const receptionistController = {
 
       return res.status(500).json({
         error: "Failed to retrieve attendance history",
+      });
+    }
+  },
+
+  async deleteReceptionistDocument(req, res) {
+    try {
+      const { receptionistId, documentId } = req.params;
+
+      const document = await ReceptionistDocument.findOne({
+        where: {
+          id: documentId,
+          receptionistId,
+        },
+      });
+
+      if (!document) {
+        return res.status(404).json({
+          error: "Document not found.",
+        });
+      }
+
+      await document.destroy();
+
+      return res.status(200).json({
+        message: "Document deleted successfully.",
+      });
+    } catch (error) {
+      console.log(error);
+      return res.status(500).json({
+        error: "Failed to delete document.",
       });
     }
   },

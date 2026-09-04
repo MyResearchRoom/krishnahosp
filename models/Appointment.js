@@ -55,7 +55,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
       note: {
-        type: DataTypes.STRING,
+        type: DataTypes.TEXT("long"),
         allowNull: true,
       },
       chiefComplaints: {
@@ -65,6 +65,11 @@ module.exports = (sequelize, DataTypes) => {
       investigation: {
         type: DataTypes.JSON,
         allowNull: true,
+      },
+      reminderSent: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
       },
       diagnosis: {
         type: DataTypes.JSON,
@@ -82,6 +87,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      language:{
+        type:DataTypes.STRING,
+        allowNull:true,
+      }
     },
 
     {

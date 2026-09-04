@@ -10,17 +10,17 @@ module.exports = (sequelize, DataTypes) => {
       },
       checkOutTime: {
         type: DataTypes.DATE,
-        allowNull: true, // Can be null at the time of check-in
+        allowNull: true, 
       },
       date: {
-        type: DataTypes.DATEONLY, // Store the date separately for easy querying
+        type: DataTypes.DATEONLY, 
         allowNull: false,
       },
     },
     {
       tableName: "attendances",
       timestamps: true,
-      updatedAt: false, // Disable 'updatedAt' field since we don't need it here
+      updatedAt: false, 
     }
   );
 

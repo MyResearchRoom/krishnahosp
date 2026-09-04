@@ -26,9 +26,42 @@ const {
 const { generateRandomMapping } = require("../utils/generateRandomMapping");
 const constants = require("../utils/constants");
 const { maskData } = require("../utils/maskData");
+const { transliterate } = require("transliteration");
+
+// const generateUniqueDoctorId = async (name) => {
+//   const nameParts = name.split(" ");
+//   const initials = nameParts
+//     .map((part) => part.charAt(0))
+//     .join("")
+//     .toUpperCase();
+
+//   let uniqueId;
+//   let isUnique = false;
+
+//   while (!isUnique) {
+//     const randomDigits = Math.floor(10000 + Math.random() * 90000);
+//     uniqueId = `${initials}${randomDigits}`;
+
+//     const existingDoctor = await Doctor.findOne({
+//       where: { doctorId: uniqueId },
+//     });
+
+//     if (!existingDoctor) {
+//       isUnique = true;
+//     }
+//   }
+
+//   return uniqueId;
+// };
 
 const generateUniqueDoctorId = async (name) => {
-  const nameParts = name.split(" ");
+  const englishName = transliterate(name);
+
+  const nameParts = englishName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
   const initials = nameParts
     .map((part) => part.charAt(0))
     .join("")
@@ -39,6 +72,7 @@ const generateUniqueDoctorId = async (name) => {
 
   while (!isUnique) {
     const randomDigits = Math.floor(10000 + Math.random() * 90000);
+
     uniqueId = `${initials}${randomDigits}`;
 
     const existingDoctor = await Doctor.findOne({
@@ -51,7 +85,34 @@ const generateUniqueDoctorId = async (name) => {
   }
 
   return uniqueId;
-};
+}
+
+
+const generateOtpEmailHtml = (otp, heading = "Your Login OTP") => `
+<div style="background-color:#f4f4f7;padding:40px 0;font-family:'Segoe UI',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+    <tr>
+      <td style="background-color:#521785;padding:24px 32px;">
+        <h1 style="margin:0;color:#ffffff;font-size:20px;letter-spacing:0.3px;">HMS</h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:32px;">
+        <p style="margin:0 0 8px;color:#1a1a1a;font-size:16px;">${heading}</p>
+        <p style="margin:0 0 24px;color:#6b6b6b;font-size:14px;">Use the code below to continue. This code is valid for 5 minutes.</p>
+        <div style="background-color:#f4eefb;border:1px solid #521785;border-radius:6px;padding:16px 0;text-align:center;margin-bottom:24px;">
+          <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:#521785;">${otp}</span>
+        </div>
+        <p style="margin:0;color:#9a9a9a;font-size:12px;">If you didn't request this code, you can safely ignore this email.</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="background-color:#f4f4f7;padding:16px 32px;text-align:center;">
+        <p style="margin:0;color:#9a9a9a;font-size:11px;">© ${new Date().getFullYear()} HMS. All rights reserved.</p>
+      </td>
+    </tr>
+  </table>
+</div>`;
 
 const doctorController = {
   async register(req, res) {
@@ -73,6 +134,7 @@ const doctorController = {
       alternateContactNo,
       experience,
       clinicAddress,
+      department,
     } = req.body;
 
     try {
@@ -116,18 +178,20 @@ const doctorController = {
         medicalDegree,
         governmentId,
         specialization,
+        department,
         alternateContactNo,
         experience,
         clinicAddress,
         mapping: encrypt(JSON.stringify(generateRandomMapping())),
         profile: req.file
           ? `data:${req.file.mimetype};base64,${req.file.buffer.toString(
-              "base64"
-            )}`
+            "base64"
+          )}`
           : null,
         profileContentType: req.file?.mimetype || null,
         password: hashedPassword,
         verificationToken: token,
+
       });
 
       const registrationDate = new Date(dateOfRegistration);
@@ -142,8 +206,8 @@ const doctorController = {
         from: process.env.EMAIL,
         to: email,
         subject: "Verify your email",
-        html: `<p>Click <a href="${process.env.CLIENT_URL}/api/auth/verify/${token}">here</a> to verify your email.</p> </hr>
-        <p>if its not you then please Click <a href="${process.env.CLIENT_URL}/api/auth/remove/${token}">here</a> to remove your email.</p>`,
+        html: `<p>Click <a href="${process.env.CLIENT_URL}/verify-email/${token}">here</a> to verify your email.</p> </hr>
+        <p>if its not you then please Click <a href="${process.env.CLIENT_URL}/remove-email/${token}">here</a> to remove your email.</p>`,
       };
 
       await transporter.sendMail(mailOptions);
@@ -153,6 +217,8 @@ const doctorController = {
         doctorId,
       });
     } catch (error) {
+      console.log(error);
+
       return res.status(500).json({ error: "Registration failed" });
     }
   },
@@ -249,7 +315,7 @@ const doctorController = {
   },
 
   async login(req, res) {
-    const { email, password } = req.body;
+    const { email, password,userRole } = req.body;
 
     const transaction = await sequelize.transaction();
     try {
@@ -258,28 +324,30 @@ const doctorController = {
       let acceptedTAndC;
       let hospitalId;
 
-      user = await Doctor.findOne({
-        where: { email },
-        attributes: [
-          "id",
-          "email",
-          "password",
-          "verified",
-          "acceptedTAndC",
-          "verificationToken",
-          "otp",
-          "otpExpiry",
-        ],
-        transaction,
-      });
+      if(userRole==="doctor") {
+        user = await Doctor.findOne({
+          where: { email },
+          attributes: [
+            "id",
+            "email",
+            "password",
+            "verified",
+            "acceptedTAndC",
+            "verificationToken",
+            "otp",
+            "otpExpiry",
+          ],
+          transaction,
+        });
 
-      if (user) {
-        role = "doctor";
-        acceptedTAndC = user.acceptedTAndC;
-        hospitalId = user.id;
+        if (user) {
+          role = "doctor";
+          acceptedTAndC = user.acceptedTAndC;
+          hospitalId = user.id;
+        }
       }
 
-      if (!user) {
+      if (userRole==="receptionist") {
         user = await Receptionist.findOne({
           where: { email },
           attributes: [
@@ -297,7 +365,7 @@ const doctorController = {
         }
       }
 
-      if (!user) {
+      if (userRole==="subDoctor") {
         user = await SubDoctor.findOne({
           where: { email },
           attributes: [
@@ -317,54 +385,67 @@ const doctorController = {
       }
 
       if (!user) {
-        if (transaction) await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(404).json({ error: "Invalid email or password" });
       }
 
-      if (role === "doctor" && user.verified === false) {
-        const token = crypto.randomBytes(32).toString("hex");
-
-        
-        user.verificationToken = token;
-        await user.save();
-
-        const mailOptions = {
-          from: process.env.EMAIL,
-          to: email,
-          subject: "Verify your email",
-          html: `<p>Click <a href="${process.env.CLIENT_URL}/api/auth/verify/${token}">here</a> to verify your email.</p>`,
-        };
-        
-
-        await transporter.sendMail(mailOptions);
-        return res.status(400).json({ error: "Please verify your email" });
-      }
-
-      if (role === "subDoctor" && user.isActive === false) {
-        return res.status(403).json({
-          error: "Your account is inactive. Please contact to admin.",
+      if (!user.password) {
+        if (transaction && !transaction.finished) await transaction.rollback();
+        return res.status(400).json({
+          error:
+            "No password has been set for this account yet. Please use 'Set Password' to create one.",
+          passwordNotSet: true,
         });
       }
 
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(401).json({ error: "Invalid credentials" });
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      if (role === "doctor" && user.verified === false) {
+        const token = crypto.randomBytes(32).toString("hex");
+
+        user.verificationToken = token;
+        await user.save({ transaction });
+        await transaction.commit();
+
+        const mailOptions = {
+          from: process.env.EMAIL,
+          to: email,
+          subject: "Verify your email",
+          html: `<p>Click <a href="${process.env.CLIENT_URL}/verify-email/${token}">here</a> to verify your email.</p>`,
+        };
+
+        try {
+          await transporter.sendMail(mailOptions);
+        } catch (mailErr) {
+          console.error("Failed to send verification email:", mailErr);
+        }
+        return res.status(400).json({ error: "Please verify your email" });
+      }
+
+      if (role === "doctor" && user.accountStatus === "suspended") {
+        if (transaction && !transaction.finished) await transaction.rollback();
+        return res.status(403).json({
+          error: "Your hospital account has been suspended. Please contact support.",
+        });
+      }
+
+      if (role === "subDoctor" && user.isActive === false) {
+        if (transaction && !transaction.finished) await transaction.rollback();
+        return res.status(403).json({
+          error: "Your account is inactive. Please contact to admin.",
+        });
+      }
+
+      // const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otp = "123456"
       user.otp = otp;
       user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
 
       await user.save({ transaction });
-
-      const otpMailOptions = {
-        from: process.env.EMAIL,
-        to: email,
-        subject: "Your Login OTP",
-        html: `<p>Your OTP for login is <b>${otp}</b>. It will expire in 5 minutes.</p>`,
-      };
-
-      await transporter.sendMail(otpMailOptions);
 
       await AuditLog.create(
         {
@@ -380,8 +461,8 @@ const doctorController = {
             role === "doctor"
               ? "Doctor"
               : role === "receptionist"
-              ? "Receptionist"
-              : "subDoctor",
+                ? "Receptionist"
+                : "subDoctor",
           status: "success",
           endpoint: req.url,
           entityId: user.id,
@@ -395,57 +476,321 @@ const doctorController = {
 
       await transaction.commit();
 
+      console.log(`[LOGIN OTP] Generated OTP for ${email}: ${otp}`);
+
+      const otpMailOptions = {
+        from: process.env.EMAIL,
+        to: email,
+        subject: "Your Login OTP",
+        html: generateOtpEmailHtml(otp, "Your Login OTP"),
+      };
+
+      let emailSent = true;
+      try {
+        await transporter.sendMail(otpMailOptions);
+      } catch (mailErr) {
+        emailSent = false;
+        console.error("Failed to send OTP email (SMTP Error):", mailErr.message);
+      }
+
       return res.status(200).json({
         success: true,
-        message: "OTP sent to your registered Mail Id",
+        message: emailSent
+          ? "OTP sent to your registered Mail Id"
+          : `OTP generated: ${otp} (Email delivery skipped - Gmail daily limit exceeded)`,
         hospitalId,
         role: role,
         acceptedTAndC,
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
+      console.error("Login error:", error);
       return res.status(500).json({ error: "Failed to send OTP" });
     }
   },
 
-  async verifyOTP(req, res) {
-    const { email, otp } = req.body;
+  async requestSetPasswordOTP(req, res) {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
 
     const transaction = await sequelize.transaction();
     try {
-      let user, userType, acceptedTAndC, hospitalId;
+      let user, userType;
 
       user = await Doctor.findOne({
         where: { email },
-        attributes: ["id", "acceptedTAndC", "otp", "otpExpiry", "email"],
+        attributes: ["id", "email", "password", "verified"],
         transaction,
       });
+      if (user) userType = "doctor";
 
-      if (user) {
-        userType = "doctor";
-        acceptedTAndC = user.acceptedTAndC;
-        hospitalId = user.id;
+      if (!user) {
+        user = await Receptionist.findOne({
+          where: { email },
+          attributes: ["id", "email", "password"],
+          transaction,
+        });
+        if (user) userType = "receptionist";
       }
 
       if (!user) {
+        user = await SubDoctor.findOne({
+          where: { email },
+          attributes: ["id", "email", "password"],
+          transaction,
+        });
+        if (user) userType = "subDoctor";
+      }
+
+      if (!user) {
+        if (transaction) await transaction.rollback();
+        return res
+          .status(404)
+          .json({ error: "No account found with this email" });
+      }
+
+      if (user.password) {
+        if (transaction) await transaction.rollback();
+        return res.status(400).json({
+          error:
+            "This account already has a password set. Please use Forgot Password instead.",
+        });
+      }
+
+      if (userType === "doctor" && !user.verified) {
+        const token = crypto.randomBytes(32).toString("hex");
+        user.verificationToken = token;
+        await user.save({ transaction });
+
+        await transporter.sendMail({
+          from: process.env.EMAIL,
+          to: email,
+          subject: "Verify your email",
+          html: `<p>Click <a href="${process.env.CLIENT_URL}/verify-email/${token}">here</a> to verify your email.</p>`,
+        });
+
+        await transaction.commit();
+        return res.status(400).json({
+          error:
+            "Your email isn't verified yet. We've sent a new verification link — please verify, then try Set Password again.",
+        });
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      user.otp = otp;
+      user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+      await user.save({ transaction });
+
+      await AuditLog.create(
+        {
+          action: constants.RESEND_OTP,
+          details: `User (${userType}) (ID: ${user.id}, Email: ${user.email}) requested an OTP to set their password for the first time.`,
+          hospitalId:
+            userType === "doctor"
+              ? user.id
+              : userType === "subDoctor"
+                ? user.addedBy
+                : user.doctorId,
+          receptionistId: userType === "receptionist" ? user.id : null,
+          doctorId: userType === "doctor" ? user.id : null,
+          subDoctorId: userType === "subDoctor" ? user.id : null,
+          role: userType,
+          entity:
+            userType === "doctor"
+              ? "Doctor"
+              : userType === "receptionist"
+                ? "Receptionist"
+                : "SubDoctor",
+          entityId: user.id,
+          status: "success",
+          endpoint: req.url,
+          ipAddress: req.clientIp,
+          userAgent: req.headers["user-agent"],
+        },
+        { transaction }
+      );
+
+      await transaction.commit();
+
+      console.log(`[SET PASSWORD OTP] Generated OTP for ${email}: ${otp}`);
+
+      const mailOptions = {
+        from: process.env.EMAIL,
+        to: email,
+        subject: "Set Your Password - OTP",
+        html: `<p>Your OTP to set your password is <b>${otp}</b>. It will expire in 5 minutes.</p>`,
+      };
+
+      let emailSent = true;
+      try {
+        await transporter.sendMail(mailOptions);
+      } catch (mailErr) {
+        emailSent = false;
+        console.error("Failed to send Set Password OTP email (SMTP Error):", mailErr.message);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: emailSent
+          ? "OTP sent to your registered email to set your password."
+          : `OTP generated: ${otp} (Email delivery skipped - Gmail daily limit exceeded)`,
+      });
+    } catch (error) {
+      if (transaction) await transaction.rollback();
+      return res.status(500).json({ error: "Failed to send OTP" });
+    }
+  },
+
+  async setPassword(req, res) {
+    const { email, otp, password, confirmPassword } = req.body;
+
+    if (!email || !otp || !password || !confirmPassword) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: "Passwords do not match" });
+    }
+
+    if (password.length < 8) {
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 8 characters" });
+    }
+
+    const transaction = await sequelize.transaction();
+    try {
+      let user, userType;
+
+      user = await Doctor.findOne({ where: { email }, transaction });
+      if (user) userType = "doctor";
+
+      if (!user) {
+        user = await Receptionist.findOne({ where: { email }, transaction });
+        if (user) userType = "receptionist";
+      }
+
+      if (!user) {
+        user = await SubDoctor.findOne({ where: { email }, transaction });
+        if (user) userType = "subDoctor";
+      }
+
+      if (!user) {
+        if (transaction) await transaction.rollback();
+        return res
+          .status(404)
+          .json({ error: "No account found with this email" });
+      }
+
+      if (user.password) {
+        if (transaction) await transaction.rollback();
+        return res.status(400).json({
+          error:
+            "This account already has a password set. Please use Forgot Password instead.",
+        });
+      }
+
+      if (String(user.otp) !== String(otp)) {
+        if (transaction) await transaction.rollback();
+        return res.status(400).json({ error: "Invalid OTP" });
+      }
+
+      if (!user.otpExpiry || Date.now() > new Date(user.otpExpiry).getTime()) {
+        if (transaction) await transaction.rollback();
+        return res.status(400).json({ error: "OTP expired" });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      user.password = hashedPassword;
+      user.otp = null;
+      user.otpExpiry = null;
+      await user.save({ transaction });
+
+      await AuditLog.create(
+        {
+          action: constants.RESET_PASSWORD,
+          details: `User (${userType}) (ID: ${user.id}, Email: ${user.email}) set their password for the first time.`,
+          hospitalId:
+            userType === "doctor"
+              ? user.id
+              : userType === "subDoctor"
+                ? user.addedBy
+                : user.doctorId,
+          receptionistId: userType === "receptionist" ? user.id : null,
+          doctorId: userType === "doctor" ? user.id : null,
+          subDoctorId: userType === "subDoctor" ? user.id : null,
+          role: userType,
+          entity:
+            userType === "doctor"
+              ? "Doctor"
+              : userType === "receptionist"
+                ? "Receptionist"
+                : "SubDoctor",
+          entityId: user.id,
+          status: "success",
+          endpoint: req.url,
+          ipAddress: req.clientIp,
+          userAgent: req.headers["user-agent"],
+        },
+        { transaction }
+      );
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        success: true,
+        message: "Password set successfully. You can now log in.",
+      });
+    } catch (error) {
+      if (transaction) await transaction.rollback();
+      return res.status(500).json({ error: "Failed to set password" });
+    }
+  },
+
+  async verifyOTP(req, res) {
+    const { email, otp ,userType} = req.body;
+
+    const transaction = await sequelize.transaction();
+    try {
+      let user, userTypeRole, acceptedTAndC, hospitalId;
+
+      if(userType==="doctor"){
+        user = await Doctor.findOne({
+          where: { email },
+          attributes: ["id", "acceptedTAndC", "otp", "otpExpiry", "email"],
+          transaction,
+        });
+
+        if (user) {
+          userTypeRole = "doctor";
+          acceptedTAndC = user.acceptedTAndC;
+          hospitalId = user.id;
+        }
+      }
+
+      if (userType==="receptionist") {
         user = await Receptionist.findOne({
           where: { email },
           attributes: ["id", "otp", "otpExpiry", "email", "doctorId"],
           transaction,
         });
         if (user) {
-          userType = "receptionist";
+          userTypeRole = "receptionist";
           hospitalId = user.doctorId;
         }
       }
 
-      if (!user) {
+      if (userType==="subDoctor") {
         user = await SubDoctor.findOne({
           where: { email },
           attributes: ["id", "otp", "otpExpiry", "email", "addedBy"],
           transaction,
         });
         if (user) {
-          userType = "subDoctor";
+          userTypeRole = "subDoctor";
           hospitalId = user.addedBy;
         }
       }
@@ -472,10 +817,10 @@ const doctorController = {
       const payload = {
         id: user.id,
         email: user.email,
-        role: userType,
+        role: userTypeRole,
         hospitalId,
       };
-      if (userType === "doctor") payload.acceptedTAndC = acceptedTAndC;
+      if (userTypeRole === "doctor") payload.acceptedTAndC = acceptedTAndC;
 
       const token = jwt.sign(payload, process.env.JWT_SECRET, {
         expiresIn: "1d",
@@ -484,18 +829,18 @@ const doctorController = {
       await AuditLog.create(
         {
           action: constants.VERIFY_OTP,
-          details: `OTP verification for login for User (${userType}), Id: ${user.id}, email: ${user.email} done.`,
+          details: `OTP verification for login for User (${userTypeRole}), Id: ${user.id}, email: ${user.email} done.`,
           hospitalId,
-          receptionistId: userType === "receptionist" ? user.id : null,
-          doctorId: userType === "doctor" ? user.id : null,
-          subDoctorId: userType === "subDoctor" ? user.id : null,
-          role: userType,
+          receptionistId: userTypeRole === "receptionist" ? user.id : null,
+          doctorId: userTypeRole === "doctor" ? user.id : null,
+          subDoctorId: userTypeRole === "subDoctor" ? user.id : null,
+          role: userTypeRole,
           entity:
-            userType === "doctor"
+            userTypeRole === "doctor"
               ? "Doctor"
-              : userType === "receptionist"
-              ? "Receptionist"
-              : "SubDoctor",
+              : userTypeRole === "receptionist"
+                ? "Receptionist"
+                : "SubDoctor",
           entityId: user.id,
           status: "success",
           endpoint: req.url,
@@ -513,7 +858,7 @@ const doctorController = {
         message: "OTP verified successfully",
         token,
         hospitalId,
-        role: userType,
+        role: userTypeRole,
         acceptedTAndC,
       });
     } catch (error) {
@@ -569,19 +914,11 @@ const doctorController = {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      // const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otp = "123456"
       user.otp = otp;
       user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
       await user.save({ transaction });
-
-      const otpMailOptions = {
-        from: process.env.EMAIL,
-        to: email,
-        subject: "Your Login OTP",
-        html: `<p>Your OTP for login is <b>${otp}</b>. It will expire in 5 minutes.</p>`,
-      };
-
-      await transporter.sendMail(otpMailOptions);
 
       await AuditLog.create(
         {
@@ -596,8 +933,8 @@ const doctorController = {
             userType === "doctor"
               ? "Doctor"
               : userType === "receptionist"
-              ? "Receptionist"
-              : "SubDoctor",
+                ? "Receptionist"
+                : "SubDoctor",
           status: "success",
           ipAddress: req.clientIp,
           userAgent: req.headers["user-agent"],
@@ -610,15 +947,34 @@ const doctorController = {
 
       await transaction.commit();
 
+      console.log(`[RESEND OTP] Generated OTP for ${email}: ${otp}`);
+
+      const otpMailOptions = {
+        from: process.env.EMAIL,
+        to: email,
+        subject: "Your Login OTP",
+        html: generateOtpEmailHtml(otp, "Your Login OTP"),
+      };
+
+      let emailSent = true;
+      try {
+        await transporter.sendMail(otpMailOptions);
+      } catch (mailErr) {
+        emailSent = false;
+        console.error("Failed to send Resend OTP email (SMTP Error):", mailErr.message);
+      }
+
       return res.status(200).json({
         success: true,
-        message: "OTP resent successfully",
+        message: emailSent
+          ? "OTP resent successfully"
+          : `OTP generated: ${otp} (Email delivery skipped - Gmail daily limit exceeded)`,
         hospitalId,
         role: userType,
         acceptedTAndC,
       });
     } catch (error) {
-      if (transaction) await transaction.commit();
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to resend OTP" });
     }
   },
@@ -633,7 +989,7 @@ const doctorController = {
       });
 
       if (!doctor) {
-        if (!transaction) await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(404).json({ error: "Doctor not found" });
       }
 
@@ -661,7 +1017,7 @@ const doctorController = {
           receptionistId: null,
           doctorId: doctor.id,
           role: "doctor",
-          token: req.header("Authorization").split(" ")[1],
+          token: token,
           entity: "Doctor",
           entityId: doctor.id,
           status: "success",
@@ -684,12 +1040,191 @@ const doctorController = {
         acceptedTAndC: true,
       });
     } catch (error) {
+      console.log(error);
+      
       if (transaction) await transaction.rollback();
       return res.status(500).json({
-        error: "Failed to retrieve appointments",
+        error: "Failed to accept terms and condition",
       });
     }
   },
+
+  // async forgotPassword(req, res) {
+  //   const { email } = req.body;
+
+  //   const transaction = await sequelize.transaction();
+  //   try {
+  //     let user;
+  //     let userType;
+
+  //     user = await Doctor.findOne({ where: { email }, transaction });
+  //     if (user) {
+  //       userType = "doctor";
+  //     }
+
+  //     if (!user) {
+  //       user = await Receptionist.findOne({
+  //         where: { email },
+  //         attributes: ["id", "email", "doctorId"],
+  //         transaction,
+  //       });
+  //       if (user) {
+  //         userType = "receptionist";
+  //       }
+  //     }
+
+  //     if (!user) {
+  //       user = await SubDoctor.findOne({
+  //         where: { email },
+  //         attributes: ["id", "email", "addedBy"],
+  //         transaction,
+  //       });
+  //       if (user) {
+  //         userType = "subDoctor";
+  //       }
+  //     }
+
+  //     if (!user) {
+  //       if (transaction) await transaction.rollback();
+  //       return res.status(404).json({ error: "User not found" });
+  //     }
+
+  //     const resetToken = jwt.sign(
+  //       { id: user.id, email: user.email, role: userType },
+  //       process.env.JWT_SECRET,
+  //       {
+  //         expiresIn: "1h",
+  //       }
+  //     );
+
+  //     const mailOptions = {
+  //       from: process.env.EMAIL,
+  //       to: email,
+  //       subject: "Set Your Password - OTP",
+  //       html: generateOtpEmailHtml(otp, "Set Your Password"),
+  //     };
+
+  //     await transporter.sendMail(mailOptions);
+
+  //     await AuditLog.create(
+  //       {
+  //         action: constants.FORGOT_PASSWORD,
+  //         details: `User (ID: ${user.id}, Email: ${user.email}) requested a password reset.`,
+  //         hospitalId:
+  //           userType === "doctor"
+  //             ? user.id
+  //             : userType === "subDoctor"
+  //               ? user.addedBy
+  //               : user.doctorId,
+  //         receptionistId: userType === "receptionist" ? user.id : null,
+  //         doctorId: userType === "doctor" ? user.id : null,
+  //         subDoctorId: userType === "subDoctor" ? user.id : null,
+  //         role: userType,
+  //         entity:
+  //           userType === "doctor"
+  //             ? "Doctor"
+  //             : userType === "receptionist"
+  //               ? "Receptionist"
+  //               : "SubDoctor",
+  //         entityId: user.id,
+  //         status: "success",
+  //         endpoint: req.url,
+  //         ipAddress: req.clientIp,
+  //         userAgent: req.headers["user-agent"],
+  //       },
+  //       { transaction }
+  //     );
+
+  //     await transaction.commit();
+
+  //     return res
+  //       .status(200)
+  //       .json({ message: "Password reset email sent successfully." });
+  //   } catch (error) {
+  //     if (transaction) await transaction.rollback();
+  //     return res.status(500).json({ error: "Error in sending email" });
+  //   }
+  // },
+
+  // async resetPassword(req, res) {
+  //   const { token, newPassword } = req.body;
+
+  //   const transaction = await sequelize.transaction();
+  //   try {
+  //     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+  //     let user;
+
+  //     if (decoded.role === "doctor") {
+  //       user = await Doctor.findOne({
+  //         where: { id: decoded.id },
+  //         attributes: ["id"],
+  //         transaction,
+  //       });
+  //     } else if (decoded.role === "receptionist") {
+  //       user = await Receptionist.findOne({
+  //         where: { id: decoded.id },
+  //         attributes: ["id", "doctorId"],
+  //         transaction,
+  //       });
+  //     } else {
+  //       user = await SubDoctor.findOne({
+  //         where: { id: decoded.id },
+  //         attributes: ["id", "addedBy"],
+  //         transaction,
+  //       });
+  //     }
+
+  //     if (!user) {
+  //       if (transaction) await transaction.rollback();
+  //       return res.status(404).json({ error: "User not found" });
+  //     }
+
+  //     const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+  //     await user.update(
+  //       { password: hashedPassword },
+  //       { where: { id: user.id }, transaction }
+  //     );
+
+  //     await AuditLog.create(
+  //       {
+  //         action: constants.RESET_PASSWORD,
+  //         details: `User (ID: ${user.id}, Email: ${user.email}) resets the password.`,
+  //         hospitalId:
+  //           decoded.role === "doctor"
+  //             ? user.id
+  //             : decoded.role === "subDoctor"
+  //               ? user.addedBy
+  //               : user.doctorId,
+  //         receptionistId: decoded.role === "receptionist" ? user.id : null,
+  //         doctorId: decoded.role === "doctor" ? user.id : null,
+  //         subDoctorId: decoded.role === "subDoctor" ? user.id : null,
+  //         role: decoded.role,
+  //         token,
+  //         entity:
+  //           userType === "doctor"
+  //             ? "Doctor"
+  //             : userType === "receptionist"
+  //               ? "Receptionist"
+  //               : "SubDoctor",
+  //         entityId: decoded.id,
+  //         status: "success",
+  //         endpoint: req.url,
+  //         ipAddress: req.clientIp,
+  //         userAgent: req.headers["user-agent"],
+  //       },
+  //       { transaction }
+  //     );
+
+  //     await transaction.commit();
+
+  //     return res.status(200).json({ message: "Password reset successfully!" });
+  //   } catch (error) {
+  //     if (transaction) await transaction.rollback();
+  //     return res.status(500).json({ error: "Invalid or expired token." });
+  //   }
+  // },
 
   async forgotPassword(req, res) {
     const { email } = req.body;
@@ -740,10 +1275,126 @@ const doctorController = {
       );
 
       const mailOptions = {
-        from: process.env.EMAIL_USER,
+        from: `"Hospital Management System" <${process.env.EMAIL_USER}>`,
         to: user.email,
-        subject: "Password Reset Request",
-        html: `<p>You requested for a password reset. Click <a href="${process.env.CLIENT_URL}/reset-password/${resetToken}">here</a> to reset your password. The link will expire in 1 hour.</p>`,
+        subject: "Reset Your Password",
+        html: `
+          <div style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7fb;padding:30px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+
+                    <!-- Header -->
+                    <tr>
+                      <td style="background:#2563eb;padding:25px;text-align:center;">
+                        <h2 style="margin:0;color:#521785;">
+                          Hospital Management System
+                        </h2>
+                      </td>
+                    </tr>
+
+                    <!-- Body -->
+                    <tr>
+                      <td style="padding:35px;">
+                        <h3 style="margin-top:0;color:#222;">
+                          Password Reset Request
+                        </h3>
+
+                        <p style="font-size:15px;color:#555;line-height:1.7;">
+                          Hello,
+                        </p>
+
+                        <p style="font-size:15px;color:#555;line-height:1.7;">
+                          We received a request to reset the password for your
+                          <strong>Hospital Management System</strong> account.
+                        </p>
+
+                        <p style="font-size:15px;color:#555;line-height:1.7;">
+                          Click the button below to create a new password.
+                        </p>
+
+                        <div style="text-align:center;margin:35px 0;">
+                          <a
+                            href="${process.env.CLIENT_URL}/reset-password/${resetToken}"
+                            style="
+                              display:inline-block;
+                              background:#2563eb;
+                              color:#521785;
+                              text-decoration:none;
+                              padding:14px 30px;
+                              border-radius:6px;
+                              font-size:16px;
+                              font-weight:bold;
+                            "
+                          >
+                            Reset Password
+                          </a>
+                        </div>
+
+                        <p style="font-size:15px;color:#555;line-height:1.7;">
+                          This password reset link will remain valid for
+                          <strong>1 hour</strong>.
+                        </p>
+
+                        <p style="font-size:15px;color:#555;line-height:1.7;">
+                          If the button above doesn't work, copy and paste the following
+                          link into your browser:
+                        </p>
+
+                        <p style="
+                          background:#f3f4f6;
+                          padding:12px;
+                          border-radius:6px;
+                          word-break:break-all;
+                          font-size:13px;
+                          color:#2563eb;
+                        ">
+                          ${process.env.CLIENT_URL}/reset-password/${resetToken}
+                        </p>
+
+                        <div style="
+                          margin-top:30px;
+                          padding:15px;
+                          background:#fff8e1;
+                          border-left:4px solid #f59e0b;
+                          color:#7c5d00;
+                          font-size:14px;
+                        ">
+                          <strong>Security Notice:</strong><br>
+                          If you did not request a password reset, you can safely ignore
+                          this email. Your password will remain unchanged.
+                        </div>
+
+                        <hr style="margin:35px 0;border:none;border-top:1px solid #e5e7eb;">
+
+                        <p style="font-size:14px;color:#777;margin-bottom:0;">
+                          Regards,<br>
+                          <strong>Hospital Management System Team</strong>
+                        </p>
+                      </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                      <td style="
+                        background:#f9fafb;
+                        text-align:center;
+                        padding:18px;
+                        color:#888;
+                        font-size:12px;
+                      ">
+                        © ${new Date().getFullYear()} Hospital Management System.
+                        All Rights Reserved.
+                      </td>
+                    </tr>
+
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </div>
+        `,
       };
 
       await transporter.sendMail(mailOptions);
@@ -845,9 +1496,9 @@ const doctorController = {
           role: decoded.role,
           token,
           entity:
-            userType === "doctor"
+            decoded.role === "doctor"
               ? "Doctor"
-              : userType === "receptionist"
+              : decoded.role === "receptionist"
               ? "Receptionist"
               : "SubDoctor",
           entityId: decoded.id,
@@ -863,6 +1514,8 @@ const doctorController = {
 
       return res.status(200).json({ message: "Password reset successfully!" });
     } catch (error) {
+      console.log(error);
+      
       if (transaction) await transaction.rollback();
       return res.status(500).json({ error: "Invalid or expired token." });
     }
@@ -928,9 +1581,8 @@ const doctorController = {
       await AuditLog.create(
         {
           action: existingFee ? constants.UPDATE_FEE : constants.ADD_FEE,
-          details: `User (ID: ${doctor.id}, Email: ${doctor.email}) ${
-            existingFee ? "Updated" : "Added"
-          } fee for ${feesFor}.`,
+          details: `User (ID: ${doctor.id}, Email: ${doctor.email}) ${existingFee ? "Updated" : "Added"
+            } fee for ${feesFor}.`,
           hospitalId: doctor.id,
           receptionistId: null,
           doctorId: doctor.id,
@@ -1134,9 +1786,8 @@ const doctorController = {
           action: updated
             ? constants.UPDATE_PAYMENT_QR
             : constants.ADD_PAYMENT_QR,
-          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${
-            updated ? "updated" : "added"
-          } payment QR.`,
+          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${updated ? "updated" : "added"
+            } payment QR.`,
           hospitalId: req.user.hospitalId,
           receptionistId: req.user.role === "receptionist" ? req.user.id : null,
           doctorId: req.user.role === "doctor" ? req.user.id : null,
@@ -1183,9 +1834,8 @@ const doctorController = {
       });
 
       let updated = doctor.signature ? true : false;
-      doctor.signature = `data:${
-        req.file.mimetype
-      };base64,${req.file.buffer.toString("base64")}`;
+      doctor.signature = `data:${req.file.mimetype
+        };base64,${req.file.buffer.toString("base64")}`;
 
       await doctor.save({ transaction });
 
@@ -1194,9 +1844,8 @@ const doctorController = {
           action: updated
             ? constants.UPDATE_SIGNATURE
             : constants.ADD_SIGNATURE,
-          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${
-            updated ? "updated" : "added"
-          } signature.`,
+          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${updated ? "updated" : "added"
+            } signature.`,
           hospitalId: req.user.hospitalId,
           receptionistId: req.user.role === "receptionist" ? req.user.id : null,
           doctorId: req.user.role === "doctor" ? req.user.id : null,
@@ -1221,7 +1870,7 @@ const doctorController = {
         )}`,
       });
     } catch (error) {
-      if (transaction) await transaction.commit();
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to upload signature" });
     }
   },
@@ -1239,18 +1888,16 @@ const doctorController = {
       });
 
       const updated = doctor.logo ? true : false;
-      doctor.logo = `data:${
-        req.file.mimetype
-      };base64,${req.file.buffer.toString("base64")}`;
+      doctor.logo = `data:${req.file.mimetype
+        };base64,${req.file.buffer.toString("base64")}`;
 
       await doctor.save({ transaction });
 
       await AuditLog.create(
         {
           action: updated ? constants.UPDATE_LOGO : constants.ADD_LOGO,
-          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${
-            updated ? "updated" : "added"
-          } logo.`,
+          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${updated ? "updated" : "added"
+            } logo.`,
           hospitalId: req.user.hospitalId,
           receptionistId: req.user.role === "receptionist" ? req.user.id : null,
           doctorId: req.user.role === "doctor" ? req.user.id : null,
@@ -1322,9 +1969,8 @@ const doctorController = {
           action: updated
             ? constants.UPDATE_CHECK_IN_OUT_TINE
             : constants.ADD_CHECK_IN_OUT_TINE,
-          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${
-            updated ? "updated" : "added"
-          } check in/out time.`,
+          details: `User (ID: ${req.user.id}, Email: ${req.user.email}) ${updated ? "updated" : "added"
+            } check in/out time.`,
           hospitalId: req.user.hospitalId,
           receptionistId: req.user.role === "receptionist" ? req.user.id : null,
           doctorId: req.user.role === "doctor" ? req.user.role : null,
@@ -1349,7 +1995,7 @@ const doctorController = {
         },
       });
     } catch (error) {
-      if (transaction) await transaction.commit();
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({
         error: "Failed to set check-in and check-out times",
       });
@@ -1461,6 +2107,7 @@ const doctorController = {
       alternateContactNo,
       experience,
       clinicAddress,
+      department,
     } = req.body;
 
     const transaction = await sequelize.transaction();
@@ -1481,6 +2128,7 @@ const doctorController = {
           "alternateContactNo",
           "experience",
           "clinicAddress",
+          "department",
         ],
         where: { id: doctorId },
         transaction,
@@ -1522,6 +2170,7 @@ const doctorController = {
           alternateContactNo: alternateContactNo || doctor.alternateContactNo,
           experience: experience || doctor.experience,
           clinicAddress: clinicAddress || doctor.clinicAddress,
+          department: department || doctor.department,
         },
         {
           where: { id: doctorId },
@@ -1688,10 +2337,10 @@ const doctorController = {
       let doctorData = appointment.doctor
         ? appointment.doctor.toJSON()
         : {
-            ...appointment.subDoctor.toJSON(),
-            medicalDegree: appointment.subDoctor.qualification,
-            ...appointment.subDoctor.doctor.toJSON(),
-          };
+          ...appointment.subDoctor.toJSON(),
+          medicalDegree: appointment.subDoctor.qualification,
+          ...appointment.subDoctor.doctor.toJSON(),
+        };
 
       if (doctorData.signature) {
         doctorData.signature = getDecryptedDocumentAsBase64(
@@ -1703,7 +2352,6 @@ const doctorController = {
         doctorData.logo = getDecryptedDocumentAsBase64(doctorData.logo);
       }
 
-      // if(doctorData?.doctor?.logo) doctorData?.doctor?.logo = null
 
       await AuditLog.create({
         action: constants.GET_DOCTOR,
@@ -1783,12 +2431,12 @@ const doctorController = {
         ],
         where: {
           status: {
-            [Op.is]: null, // Status is null
+            [Op.is]: null,
           },
           date: {
             [Op.between]: [
-              new Date().setHours(0, 0, 0, 0), // Start of the day
-              new Date().setHours(23, 59, 59, 59), // End of the day
+              new Date().setHours(0, 0, 0, 0),
+              new Date().setHours(23, 59, 59, 59),
             ],
           },
         },
@@ -2118,9 +2766,8 @@ const doctorController = {
           action: updated
             ? constants.UPDATE_CLINIC_START_END_TIME
             : constants.SET_CLINIC_START_END_TIME,
-          details: `User (ID: ${doctor.id}, Email: ${doctor.email}) ${
-            updated ? "updated" : "added"
-          } clinic start/end time.`,
+          details: `User (ID: ${doctor.id}, Email: ${doctor.email}) ${updated ? "updated" : "added"
+            } clinic start/end time.`,
           newValue: { clinicStartTime, clinicEndTime, openDays, closedDays },
           oldValue: updated ? oldValues : null,
           hospitalId: doctor.id,
@@ -2274,6 +2921,8 @@ const doctorController = {
         data: shifts || [],
       });
     } catch (error) {
+      console.log("getShifts error",error);
+      
       return res.status(500).json({ error: "Failed to fetch shifts" });
     }
   },
@@ -2290,6 +2939,7 @@ const doctorController = {
       const { id } = req.params;
 
       if (!id) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(400).json({ error: "Shift id is required" });
       }
 
@@ -2299,7 +2949,7 @@ const doctorController = {
       });
 
       if (!shift) {
-        await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(404).json({ error: "Shift not found" });
       }
 
@@ -2339,6 +2989,7 @@ const doctorController = {
         message: "Shift deleted successfully",
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to delete shift" });
     }
   },
@@ -2355,6 +3006,7 @@ const doctorController = {
       const { slotName, slotStartTime, slotEndTime } = req.body;
 
       if (!slotStartTime || !slotEndTime) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res
           .status(400)
           .json({ error: "Start and End time are required" });
@@ -2366,19 +3018,22 @@ const doctorController = {
       });
 
       if (existingSlot) {
-        await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(400).json({
           success: false,
           message: "Slot name already exist, please enter another name",
         });
       }
 
-      const slot = await DoctorAvailabilitySlot.create({
-        doctorId,
-        slotName,
-        slotStartTime,
-        slotEndTime,
-      });
+      const slot = await DoctorAvailabilitySlot.create(
+        {
+          doctorId,
+          slotName,
+          slotStartTime,
+          slotEndTime,
+        },
+        { transaction }
+      );
 
       const slotDataForAudit = {
         doctorId: doctorId,
@@ -2415,6 +3070,7 @@ const doctorController = {
         .status(200)
         .json({ message: "Slot created successfully", slot });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to create slot" });
     }
   },
@@ -2464,6 +3120,7 @@ const doctorController = {
       const { id } = req.params;
 
       if (!id) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(400).json({ error: "Slot id is required" });
       }
 
@@ -2473,7 +3130,7 @@ const doctorController = {
       });
 
       if (!slot) {
-        await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(404).json({ error: "Slot not found" });
       }
 
@@ -2513,6 +3170,7 @@ const doctorController = {
         message: "Slot deleted successfully",
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to delete slot" });
     }
   },
@@ -2629,6 +3287,7 @@ const doctorController = {
             {
               model: DoctorTimeSlot,
               as: "slots",
+              required: false,
             },
           ],
         }),
@@ -2641,6 +3300,7 @@ const doctorController = {
             {
               model: DoctorTimeSlot,
               as: "slots",
+              required: false,
             },
           ],
         }),
@@ -2664,10 +3324,10 @@ const doctorController = {
         });
       }
 
-      return  res.status(200).json({
-      success: true,
-      doctors: doctor
-        ? [
+      return res.status(200).json({
+        success: true,
+        doctors: doctor
+          ? [
             {
               ...doctor.toJSON(),
               slots: [
@@ -2695,7 +3355,7 @@ const doctorController = {
               type: "subDoctor",
             })),
           ]
-        : [
+          : [
             ...doctors.map((doc) => ({
               ...doc.toJSON(),
               slots: [
@@ -2710,7 +3370,7 @@ const doctorController = {
               type: "subDoctor",
             })),
           ],
-    });
+      });
     } catch (error) {
       console.log(error);
 

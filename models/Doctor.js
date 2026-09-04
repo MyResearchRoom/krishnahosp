@@ -112,6 +112,17 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: false,
       },
+      department: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+
+      prescriptionDisplay: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 1,
+      },
+      
       paymentQr: {
         type: DataTypes.BLOB("long"),
         allowNull: true,
@@ -191,12 +202,33 @@ module.exports = (sequelize, DataTypes) => {
     "profile",
   ];
 
-  Doctor.addHook("beforeCreate", (doctor) => encryptFields(doctor));
-  Doctor.addHook("beforeUpdate", (doctor) => encryptFields(doctor));
+  Doctor.addHook("beforeCreate", (doctor) => encryptFields(doctor, true));
+  Doctor.addHook("beforeUpdate", (doctor) => encryptFields(doctor, false));
 
-  function encryptFields(instance) {
+  function isEncryptedValue(value) {
+    return (
+      typeof value === "string" &&
+      /^[0-9a-f]{32}:[0-9a-f]+$/i.test(value)
+    );
+  }
+
+  function decryptField(value) {
+    let decryptedValue = value;
+
+    for (let i = 0; i < 3 && isEncryptedValue(decryptedValue); i++) {
+      try {
+        decryptedValue = decrypt(decryptedValue);
+      } catch (error) {
+        break;
+      }
+    }
+
+    return decryptedValue;
+  }
+
+  function encryptFields(instance, encryptAll) {
     ENCRYPT_FIELDS.forEach((field) => {
-      if (instance[field]) {
+      if (instance[field] && (encryptAll || instance.changed(field))) {
         instance[field] = encrypt(instance[field]);
       }
     });
@@ -208,7 +240,7 @@ module.exports = (sequelize, DataTypes) => {
     ENCRYPT_FIELDS.forEach((field) => {
       if (values[field]) {
         if (field !== "profile" && field !== "signature" && field !== "logo") {
-          values[field] = decrypt(values[field]);
+          values[field] = decryptField(values[field]);
         }
         if (field === "dateOfBirth")
           values["age"] = getAge(values["dateOfBirth"]);
@@ -236,6 +268,10 @@ module.exports = (sequelize, DataTypes) => {
     Doctor.hasMany(models.DoctorTimeSlot, {
       foreignKey: "doctorId",
       as: "slots",
+    });
+    Doctor.hasMany(models.IPDAdmission, {
+      foreignKey: "doctorId",
+      as: "ipdAdmissions",
     });
   };
 

@@ -25,8 +25,13 @@ router.get("/", authenticate(["doctor"]), subDoctorController.getAllSubDoctors);
 router.get("/stats", authenticate(["doctor"]), subDoctorController.stats);
 
 router.get(
+  "/departemntWiseSubdoctor", 
+  authenticate(["receptionist", "doctor", "subDoctor"]),
+  subDoctorController.getPrescriptionSubDoctors);
+  
+router.get(
   "/:id",
-  authenticate(["doctor"]),
+ authenticate(["doctor", "subDoctor"]),
   subDoctorController.getSubDoctorById
 );
 
@@ -49,6 +54,12 @@ router.delete(
 );
 
 router.patch(
+  "/togglePrescriptionDisplay",
+  authenticate(["doctor"]),
+  subDoctorController.togglePrescriptionDisplay
+);
+
+router.patch(
   "/:id/toggle-status",
   authenticate(["doctor"]),
   subDoctorController.toggleSubDoctorStatus
@@ -60,5 +71,7 @@ router.post(
   authenticate(["subDoctor"]),
   subDoctorController.addSignature
 );
+
+
 
 module.exports = router;

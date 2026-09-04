@@ -40,7 +40,7 @@ exports.getSlots = async (req, res) => {
           {
             model: DoctorTimeSlot,
             as: "slots",
-            required: true,
+            required: false,
           },
         ],
       }),
@@ -53,7 +53,7 @@ exports.getSlots = async (req, res) => {
           {
             model: DoctorTimeSlot,
             as: "slots",
-            required: true,
+            required: false,
           },
         ],
       }),

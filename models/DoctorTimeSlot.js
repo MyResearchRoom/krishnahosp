@@ -8,7 +8,7 @@ module.exports = (sequelize, DataTypes) => {
         as: "doctor",
       });
       DoctorTimeSlot.belongsTo(models.SubDoctor, {
-        foreignKey: "doctorId",
+        foreignKey: "subDoctorId",
         as: "subDoctor",
       });
     }

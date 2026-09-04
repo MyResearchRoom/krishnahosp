@@ -2,6 +2,7 @@ const express = require("express");
 require("dotenv").config();
 const bodyParser = require("body-parser");
 const { setupWebSocket } = require("./websocket.js");
+const { startAppointmentReminderJob } = require("./jobs/appointmentReminderJob");
 const http = require("http");
 
 const app = express();
@@ -42,6 +43,7 @@ const routes = require("./routes");
 app.use(routes);
 
 require("./jobs")();
+startAppointmentReminderJob(); // <-- NEW: starts the 2-hours-before reminder scheduler
 
 const server = http.createServer(app);
 
