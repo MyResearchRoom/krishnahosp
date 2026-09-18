@@ -55,4 +55,9 @@ router.get(
   patientController.getAllTimePatientCount
 );
 
+router.get(
+  "/getPatientById/:id", 
+  patientController.getPatientById
+);
+
 module.exports = router;

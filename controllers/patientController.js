@@ -17,6 +17,7 @@ const { maskData } = require("../utils/maskData");
 const {
   checkDoctorAvailability,
 } = require("../services/doctorAvailabilityService");
+const { sendAppointmentReminderEmail } = require("../services/appointmentReminderService");
 
 const generateUniquePatientId = async (name) => {
   const nameParts = name.split(" ");
@@ -28,17 +29,14 @@ const generateUniquePatientId = async (name) => {
   let uniqueId;
   let isUnique = false;
 
-  // Loop until a unique ID is generated
   while (!isUnique) {
     const randomDigits = Math.floor(10000 + Math.random() * 90000); // 5-digit random number
     uniqueId = `${initials}${randomDigits}`;
 
-    // Check if this ID already exists in the database
     const existingDoctor = await Patient.findOne({
       where: { patientId: uniqueId },
     });
 
-    // If the ID doesn't exist, it's unique
     if (!existingDoctor) {
       isUnique = true;
     }
@@ -47,8 +45,39 @@ const generateUniquePatientId = async (name) => {
   return uniqueId;
 };
 
+const generatePatientId = async (Patient, doctorId, transaction) => {
+  const prefix = "PAT";
+
+  const lastPatient = await Patient.findOne({
+    where: {
+      doctorId,
+      patientId: {
+        [Op.like]: `${prefix}-%`,
+      },
+    },
+    order: [
+      ["createdAt", "DESC"],
+      ["id", "DESC"],
+    ],
+    transaction,
+  });
+
+  let nextNumber = 1;
+
+  if (lastPatient?.patientId) {
+    const match = lastPatient.patientId.match(/(\d+)$/);
+
+    if (match) {
+      nextNumber = parseInt(match[1], 10) + 1;
+    }
+  }
+
+  return `${prefix}-${String(nextNumber).padStart(6, "0")}`;
+};
+
 const patientController = {
   async addPatient(req, res) {
+    const payload = Array.isArray(req.body) ? req.body[0] : req.body;
     const {
       name,
       mobileNumber,
@@ -65,9 +94,19 @@ const patientController = {
       referredBy,
       doctorId,
       doctorType,
-    } = req.body;
+    } = payload || {};
+
+    if (!name || !mobileNumber || !reason || !process || !date || !appointmentTime) {
+      return res.status(400).json({
+        error: "Missing required fields. Please ensure name, mobileNumber, reason, process, date, and appointmentTime are provided.",
+      });
+    }
 
     const appointmentDate = new Date(date);
+
+    if (isNaN(appointmentDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
 
     if (appointmentDate < new Date().setHours(0, 0, 0, 0)) {
       return res
@@ -82,6 +121,28 @@ const patientController = {
       return res.status(400).json({ error: "Doctor is required" });
     }
 
+    // const patientPlanLimit = await checkPlanLimit({
+    //   hospitalId: req.user.hospitalId,
+    //   resource: "patients",
+    // });
+
+    // if (!patientPlanLimit.allowed) {
+    //   return res
+    //     .status(patientPlanLimit.status)
+    //     .json(patientPlanLimit.response);
+    // }
+
+    // const appointmentPlanLimit = await checkPlanLimit({
+    //   hospitalId: req.user.hospitalId,
+    //   resource: "appointments",
+    // });
+
+    // if (!appointmentPlanLimit.allowed) {
+    //   return res
+    //     .status(appointmentPlanLimit.status)
+    //     .json(appointmentPlanLimit.response);
+    // }
+
     const transaction = await sequelize.transaction();
 
     try {
@@ -89,23 +150,24 @@ const patientController = {
         available,
         reason: noAvailabilityReason,
         slot,
-        appointmentCount,
+        appointmentCount = 0,
       } = await checkDoctorAvailability(
         req.user.role === "subDoctor"
           ? null
           : doctorType === "subDoctor"
-          ? null
-          : doctorId || req.user.id,
+            ? null
+            : doctorId || req.user.id,
         req.user.role === "subDoctor"
           ? req.user.id
           : doctorType === "subDoctor"
-          ? doctorId
-          : null,
+            ? doctorId
+            : null,
         date,
         appointmentTime
       );
 
       if (!available) {
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(400).json({ error: noAvailabilityReason });
       }
       const doctor = await Doctor.findOne({
@@ -121,24 +183,27 @@ const patientController = {
 
       const selectedFee = feeEntry ? feeEntry.fees : 0;
 
-      const patientId = await generateUniquePatientId(name);
-
-      const nameSearch = transformWithMapping(
-        name,
-        JSON.parse(decrypt(doctor.mapping)) || {}
-      );
-      const mobileSearch = transformWithMapping(
-        mobileNumber,
-        JSON.parse(decrypt(doctor.mapping)) || {}
+      const patientId = await generatePatientId(
+        Patient,
+        req.user.hospitalId,
+        transaction
       );
 
-      const existingPatient = await Patient.findOne(
-        { where: { nameSearch, mobileSearch } },
-        { transaction }
-      );
+      const mapping = (doctor && doctor.mapping) ? (JSON.parse(decrypt(doctor.mapping)) || {}) : {};
+      const nameSearch = transformWithMapping(name, mapping);
+      const mobileSearch = transformWithMapping(mobileNumber, mapping);
+
+      const existingPatient = await Patient.findOne({
+        where: {
+          doctorId: req.user.hospitalId,
+          nameSearch,
+          mobileSearch,
+        },
+        transaction,
+      });
 
       if (existingPatient) {
-        await transaction.rollback();
+        if (transaction && !transaction.finished) await transaction.rollback();
         return res.status(400).json({ error: "Patient already exists" });
       }
 
@@ -164,7 +229,7 @@ const patientController = {
       const appointment = await Appointment.create(
         {
           patientId: patient.id,
-          appointmentNumber: appointmentCount + 1,
+          appointmentNumber: (appointmentCount || 0) + 1,
           reason,
           date,
           appointmentTime,
@@ -173,15 +238,15 @@ const patientController = {
           extraFees: 0,
           ...(req.user.role === "receptionist"
             ? {
-                doctorId: doctorType === "doctor" ? doctorId : null,
-                subDoctorId: doctorType === "subDoctor" ? doctorId : null,
-              }
+              doctorId: doctorType === "doctor" ? doctorId : null,
+              subDoctorId: doctorType === "subDoctor" ? doctorId : null,
+            }
             : req.user.role === "doctor"
-            ? {
+              ? {
                 doctorId: doctorType === "subDoctor" ? null : req.user.id,
                 subDoctorId: doctorType === "subDoctor" ? doctorId : null,
               }
-            : { subDoctorId: req.user.id }),
+              : { subDoctorId: req.user.id }),
         },
         { transaction }
       );
@@ -221,16 +286,31 @@ const patientController = {
 
       await transaction.commit();
 
-      if (moment(appointment.date).isSame(moment(), "day")) {
-        update(
-          {
-            event: "newAppointment",
-            appointment: {
-              ...appointment.toJSON(),
-              patient,
+      try {
+        if (moment(appointment.date).isSame(moment(), "day")) {
+          update(
+            {
+              event: "newAppointment",
+              appointment: {
+                ...appointment.toJSON(),
+                patient,
+              },
             },
-          },
-          appointment.doctorId || appointment.subDoctorId
+            appointment.doctorId || appointment.subDoctorId
+          );
+        }
+
+        sendAppointmentReminderEmail({
+          toEmail: patient.email ? decrypt(patient.email) : null,
+          patientName: patient.name ? decrypt(patient.name) : patient.name,
+          date: appointment.date,
+          appointmentTime: appointment.appointmentTime,
+          reason: appointment.reason ? decrypt(appointment.reason) : appointment.reason,
+        });
+      } catch (postCommitError) {
+        console.error(
+          "[addPatient] Post-commit step failed (patient was still saved successfully):",
+          postCommitError
         );
       }
 
@@ -240,8 +320,9 @@ const patientController = {
         patient,
       });
     } catch (error) {
-      if (transaction) await transaction.rollback();
-      res.status(500).json({ error: "Failed to add patient" });
+      if (transaction && !transaction.finished) await transaction.rollback();
+      console.error("[addPatient Error]:", error);
+      res.status(500).json({ error: error.message || "Failed to add patient" });
     }
   },
 
@@ -270,6 +351,17 @@ const patientController = {
       return res.status(400).json({ error: "Doctor is required" });
     }
 
+    // const appointmentPlanLimit = await checkPlanLimit({
+    //   hospitalId: req.user.hospitalId,
+    //   resource: "appointments",
+    // });
+
+    // if (!appointmentPlanLimit.allowed) {
+    //   return res
+    //     .status(appointmentPlanLimit.status)
+    //     .json(appointmentPlanLimit.response);
+    // }
+
     const transaction = await sequelize.transaction();
 
     try {
@@ -292,18 +384,19 @@ const patientController = {
         req.user.role === "subDoctor"
           ? null
           : doctorType === "subDoctor"
-          ? null
-          : doctorId || req.user.id,
+            ? null
+            : doctorId || req.user.id,
         req.user.role === "subDoctor"
           ? req.user.id
           : doctorType === "subDoctor"
-          ? doctorId
-          : null,
+            ? doctorId
+            : null,
         date,
         appointmentTime
       );
 
       if (!available) {
+        await transaction.rollback();
         return res.status(400).json({ error: noAvailabilityReason });
       }
 
@@ -320,15 +413,26 @@ const patientController = {
           date: {
             [Op.between]: [startOfDay, endOfDay],
           },
+          [Op.or]: [
+            {
+              status: {
+                [Op.notIn]: ["out", "cancel"],
+              },
+            },
+            {
+              status: null,
+            },
+          ],
         },
         transaction,
       });
 
       if (existingAppointment) {
         await transaction.rollback();
-        return res
-          .status(400)
-          .json({ error: "Patient already has an appointment on this date" });
+
+        return res.status(400).json({
+          error: "Patient already has an appointment on this date",
+        });
       }
 
       const appointment = await Appointment.create(
@@ -343,15 +447,15 @@ const patientController = {
           extraFees: 0,
           ...(req.user.role === "receptionist"
             ? {
-                doctorId: doctorType === "doctor" ? doctorId : null,
-                subDoctorId: doctorType === "subDoctor" ? doctorId : null,
-              }
+              doctorId: doctorType === "doctor" ? doctorId : null,
+              subDoctorId: doctorType === "subDoctor" ? doctorId : null,
+            }
             : req.user.role === "doctor"
-            ? {
+              ? {
                 doctorId: doctorType === "subDoctor" ? null : req.user.id,
                 subDoctorId: doctorType === "subDoctor" ? doctorId : null,
               }
-            : { subDoctorId: req.user.id }),
+              : { subDoctorId: req.user.id }),
         },
         { transaction }
       );
@@ -388,18 +492,37 @@ const patientController = {
 
       await transaction.commit();
 
-      const appoDate = moment(appointment.date);
+      // Wrapped separately so nothing here can turn a successful booking
+      // into a 500 error response.
+      try {
+        const appoDate = moment(appointment.date);
 
-      if (appoDate.isSame(moment(), "day")) {
-        update(
-          {
-            event: "newAppointment",
-            appointment: {
-              ...appointment.toJSON(),
-              patient,
+        if (appoDate.isSame(moment(), "day")) {
+          update(
+            {
+              event: "newAppointment",
+              appointment: {
+                ...appointment.toJSON(),
+                patient,
+              },
             },
-          },
-          appointment.doctorId || appointment.subDoctorId
+            appointment.doctorId || appointment.subDoctorId
+          );
+        }
+
+        // --- fire-and-forget reminder, never blocks/affects the response ---
+        sendAppointmentReminderEmail({
+          toEmail: patient.email ? decrypt(patient.email) : null,
+          patientName: patient.name ? decrypt(patient.name) : patient.name,
+          date: appointment.date,
+          appointmentTime: appointment.appointmentTime,
+          reason: appointment.reason ? decrypt(appointment.reason) : appointment.reason,
+        });
+        // --- end reminder ---
+      } catch (postCommitError) {
+        console.error(
+          "[bookAppointment] Post-commit step failed (appointment was still booked successfully):",
+          postCommitError
         );
       }
 
@@ -410,7 +533,7 @@ const patientController = {
       });
     } catch (error) {
       console.log(error);
-
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to book appointment" });
     }
   },
@@ -434,49 +557,62 @@ const patientController = {
         attributes: ["mapping"],
       });
 
-      let whereClause = { "$patient.doctorId$": req.user.hospitalId };
+      const patientWhere = { doctorId: req.user.hospitalId };
+      const appointmentWhere = {};
+
       if (doctorId) {
-        if (doctorType === "doctor") whereClause["doctorId"] = doctorId;
+        if (doctorType === "doctor") appointmentWhere["doctorId"] = doctorId;
         else if (doctorType === "subDoctor")
-          whereClause["subDoctorId"] = doctorId;
+          appointmentWhere["subDoctorId"] = doctorId;
       }
-      if (req.user.role === "doctor") whereClause["doctorId"] = req.user.id;
       if (req.user.role === "subDoctor")
-        whereClause["subDoctorId"] = req.user.id;
+        appointmentWhere["subDoctorId"] = req.user.id;
 
       if (searchTerm && searchTerm.length > 0) {
+        let mappingObj = {};
+        if (doctor && doctor.mapping) {
+          try {
+            const decrypted = decrypt(doctor.mapping);
+            mappingObj = decrypted ? JSON.parse(decrypted) : {};
+          } catch (e) {
+            mappingObj = {};
+          }
+        }
         const transformSearchTerm = transformWithMapping(
           searchTerm,
-          JSON.parse(decrypt(doctor.mapping)) || {}
+          mappingObj
         );
-        whereClause[Op.or] = [
-          { "$patient.patientId$": { [Op.like]: `%${transformSearchTerm}%` } },
-          { "$patient.nameSearch$": { [Op.like]: `%${transformSearchTerm}%` } },
+        patientWhere[Op.or] = [
+          { patientId: { [Op.like]: `%${transformSearchTerm}%` } },
+          { nameSearch: { [Op.like]: `%${transformSearchTerm}%` } },
         ];
       }
 
-      if (date) whereClause.date = moment(date).format("YYYY-MM-DD");
-      if (appointmentTime) whereClause.appointmentTime = appointmentTime;
+      if (date) appointmentWhere.date = moment(date).format("YYYY-MM-DD");
+      if (appointmentTime) appointmentWhere.appointmentTime = appointmentTime;
 
       const patients = await Appointment.findAndCountAll({
         where: date
-          ? whereClause
+          ? appointmentWhere
           : {
-              ...whereClause,
-              date: {
-                [Op.eq]: sequelize.literal(`(
+            ...appointmentWhere,
+            date: {
+              [Op.eq]: sequelize.literal(`(
                   SELECT MAX(a2.date)
                   FROM appointments AS a2
                   WHERE a2.patientId = Appointment.patientId
                 )`),
-              },
             },
+          },
         include: [
           {
             model: Patient,
             as: "patient",
+            where: patientWhere,
+            required: true,
           },
         ],
+        distinct: true,
         limit: Number(limit),
         offset: Number(offset),
         order: [["patientId", "DESC"]],
@@ -509,6 +645,7 @@ const patientController = {
         },
       });
     } catch (error) {
+      console.error("[getPatients Error]:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   },
@@ -542,7 +679,17 @@ const patientController = {
 
       const patients = await Patient.findAll({
         where: patientWhereClause,
-        attributes: ["id", "name", "mobileNumber"],
+        attributes: [
+          "id",
+          "name",
+          "patientId",
+          "mobileNumber",
+          "age",
+          "gender",
+          "address",
+          "dateOfBirth",
+          "bloodGroup",
+        ],
         include: [
           {
             model: Appointment,
@@ -702,11 +849,6 @@ const patientController = {
 
   async getAllTimePatientCount(req, res) {
     try {
-      // const count = await Patient.count({
-      //   where: {
-      //     doctorId: req.user.hospitalId,
-      //   },
-      // });
       const count = await Appointment.count({
         where: {
           ...(req.user.role === "doctor"
@@ -728,6 +870,42 @@ const patientController = {
       });
     }
   },
+
+  async getPatientById(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          message: "Patient ID is required.",
+        });
+      }
+
+      const patient = await Patient.findByPk(id);
+
+      if (!patient) {
+        return res.status(404).json({
+          success: false,
+          message: "Patient not found.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Patient details fetched successfully.",
+        patient: patient.toJSON(), // decrypted data
+      });
+    } catch (error) {
+      console.error("Error getting patient by ID:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to get patient details.",
+      });
+    }
+  },
 };
 
 module.exports = patientController;
+module.exports.generatePatientId = generatePatientId;

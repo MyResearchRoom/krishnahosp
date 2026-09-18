@@ -12,7 +12,7 @@ const { authenticate } = require("../middlewares/authentication.js");
 
 router.post(
   "/register",
-  upload.fields([{ name: "profile" }, { name: "documents[]" }]),
+  upload.fields([{ name: "profile" }, { name: "documents" }, { name: "documents[]" }]),
   receptionistRegistrationValidationRules,
   validate,
   authenticate([]),
@@ -21,7 +21,14 @@ router.post(
 
 router.put(
   "/:id",
-  upload.fields([{ name: "profile" }, { name: "documents[]" }]),
+  upload.fields([{ name: "profile" }, { name: "documents" }, { name: "documents[]" }]),
+  authenticate([]),
+  receptionistController.editReceptionist
+);
+
+router.patch(
+  "/:id",
+  upload.fields([{ name: "profile" }, { name: "documents" }, { name: "documents[]" }]),
   authenticate([]),
   receptionistController.editReceptionist
 );
@@ -30,6 +37,12 @@ router.delete(
   "/:id",
   authenticate([]),
   receptionistController.removeReceptionist
+);
+
+router.delete(
+  "/:receptionistId/documents/:documentId",
+  authenticate([]),
+  receptionistController.deleteReceptionistDocument
 );
 
 router.get("/", authenticate([]), receptionistController.getAllReceptionists);

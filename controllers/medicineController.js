@@ -75,6 +75,7 @@ const medicineController = {
         .status(200)
         .json({ message: "Medicine added successfully", medicine });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to add medicine" });
     }
   },
@@ -194,6 +195,7 @@ const medicineController = {
         .status(200)
         .json({ message: "Medicine updated successfully", medicine });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       return res.status(500).json({ error: "Failed to update medicine" });
     }
   },
@@ -356,6 +358,7 @@ const medicineController = {
         message: `${medicines.length} medicines added successfully`,
       });
     } catch (error) {
+      if (transaction && !transaction.finished) await transaction.rollback();
       res.status(500).json({ error: "Failed to add medicines" });
     }
   },
