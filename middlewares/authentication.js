@@ -24,8 +24,6 @@ exports.authenticate = (roles = []) => {
         });
       }
 
-      console.log(decoded);
-
       if (roles.length > 0 && !roles.includes(decoded.role)) {
         return res.status(403).json({
           error:
@@ -37,7 +35,7 @@ exports.authenticate = (roles = []) => {
       if (decoded.role === "doctor") {
         user = await Doctor.findOne({
           where: { id: decoded.id },
-          attributes: ["id", "name", "email", "mobileNumber"],
+          attributes: ["id", "name", "email", "mobileNumber","department"],
         });
       } else if (decoded.role === "receptionist") {
         user = await Receptionist.findOne({
@@ -54,6 +52,7 @@ exports.authenticate = (roles = []) => {
             "mobileNumber",
             "isActive",
             "addedBy",
+            "department",
           ],
         });
       }
@@ -68,6 +67,12 @@ exports.authenticate = (roles = []) => {
         return res.status(403).json({
           error:
             "Access denied. Your account is inactive. Please contact the doctor.",
+        });
+      }
+
+      if (decoded.role === "doctor" && user.accountStatus === "suspended") {
+        return res.status(403).json({
+          error: "Access denied. Your hospital account has been suspended.",
         });
       }
 
@@ -89,7 +94,7 @@ exports.authenticate = (roles = []) => {
       next();
     } catch (error) {
       console.log(error);
-
+      
       return res.status(400).json({
         message: "Invalid Or expired token, please login again.",
       });

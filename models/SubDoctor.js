@@ -82,6 +82,18 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: false,
       },
+
+      department: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+
+      prescriptionDisplay: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      
       qualification: {
         type: DataTypes.STRING,
         allowNull: true,

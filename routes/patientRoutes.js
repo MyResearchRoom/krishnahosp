@@ -9,6 +9,9 @@ const {
   patientAppointmentValidationRule,
 } = require("../middlewares/validations.js");
 const { authenticate } = require("../middlewares/authentication");
+const { upload } = require("../middlewares/upload.js");
+
+const allowIpdRoles = authenticate(["receptionist", "doctor", "subDoctor"]);
 
 router.post(
   "/register",
@@ -53,6 +56,30 @@ router.get(
   "/count/all-time",
   authenticate(["receptionist", "doctor", "subDoctor"]),
   patientController.getAllTimePatientCount
+);
+
+router.get(
+  "/getPatientById/:id", 
+  patientController.getPatientById
+);
+
+router.post(
+  "/addDocuments/:patientId/:admissionId",
+  allowIpdRoles,
+  upload.single("document"),
+  patientController.addPatientDocument
+);
+
+router.get(
+  "/documents/:patientId/:admissionId",
+  allowIpdRoles,
+  patientController.getPatientDocuments
+);
+
+router.delete(
+  "/:documentId",
+  allowIpdRoles,
+  patientController.deletePatientDocument
 );
 
 module.exports = router;

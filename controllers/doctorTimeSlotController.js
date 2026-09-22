@@ -40,7 +40,7 @@ exports.getSlots = async (req, res) => {
           {
             model: DoctorTimeSlot,
             as: "slots",
-            required: true,
+            required: false,
           },
         ],
       }),
@@ -53,7 +53,7 @@ exports.getSlots = async (req, res) => {
           {
             model: DoctorTimeSlot,
             as: "slots",
-            required: true,
+            required: false,
           },
         ],
       }),
@@ -115,11 +115,17 @@ exports.getSlots = async (req, res) => {
 exports.updateSlot = async (req, res) => {
   try {
     const { id } = req.params;
+    console.log("id from frntnd",id);
+    console.log("id",req.user.id);
+    console.log("role",req.user.role);
+
+    
+    
     const { slotName, startTime, endTime, maxCapacity, availabilityIds } =
       req.body;
 
     const slot = await DoctorTimeSlot.findOne({
-      where: { id, doctorId: req.user.id },
+      where: { id },
     });
 
     if (!slot) {

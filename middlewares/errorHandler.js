@@ -1,9 +1,8 @@
 const multer = require("multer");
 
 const errorHandler = (err, req, res, next) => {
-  
-  let statusCode = err.status || 500;
-  let message = "Internal Server Error";
+  let statusCode = err.status || err.statusCode || 500;
+  let message = err.message || "Internal Server Error";
 
   if (err.name === "ValidationError") {
     statusCode = 400;
@@ -40,10 +39,13 @@ const errorHandler = (err, req, res, next) => {
     message = err.message;
   }
 
+  console.error(`[Error Handler - Status ${statusCode}]:`, err);
+
   res.status(statusCode).json({
     status: "error",
     statusCode: statusCode,
     error: message,
+    ...(process.env.NODE_ENV !== "production" && err.errors && { details: err.errors })
   });
 };
 

@@ -49,6 +49,9 @@ router.post(
 
 router.post("/change-password", authorize, doctorController.changePassword);
 
+router.post("/request-set-password-otp", doctorController.requestSetPasswordOTP);
+router.post("/set-password", doctorController.setPassword);
+
 router.post("/fees", authorize, doctorController.setFees);
 
 router.get("/fees", authorize, doctorController.getFees);
@@ -149,6 +152,10 @@ router.delete("/deleteSlot/:id", authorize, doctorController.deleteSlot);
 
 router.get("/revenue-sheet", authorize, doctorController.getRevenueSheet);
 
-router.get("/list", authorize, doctorController.getDoctorList);
+router.get(
+  "/list",
+  authenticate(["doctor", "receptionist", "subDoctor"]),
+  doctorController.getDoctorList
+);
 
 module.exports = router;
